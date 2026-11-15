@@ -1,4 +1,5 @@
 import datetime
+import importlib
 import os
 import pathlib
 import tempfile
@@ -6,6 +7,15 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+
+import google_connector
+import llenadores
+import mapeo_gemini
+
+# Forzar a Streamlit Cloud a recargar en memoria la última versión subida a GitHub
+importlib.reload(google_connector)
+importlib.reload(llenadores)
+importlib.reload(mapeo_gemini)
 
 from google_connector import (
     cargar_datos_completos_maestra,
@@ -16,8 +26,6 @@ from google_connector import (
 )
 from llenadores import llenar_excel, llenar_word, llenar_pdf, llenar_csv
 from mapeo_gemini import generar_mapa_con_gemini
-
-load_dotenv()
 
 CRED_GOOGLE = "credenciales_google.json"
 NOMBRE_SHEET = "Base_Maestra_Proveedores"
