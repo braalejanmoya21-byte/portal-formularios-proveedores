@@ -1,0 +1,10 @@
+streamlit
+gspread
+google-auth
+google-genai
+openpyxl
+python-docx
+pypdf
+reportlab
+pandas
+python-dotenv

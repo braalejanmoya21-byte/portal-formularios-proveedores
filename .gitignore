@@ -1,0 +1,12 @@
+bot-proveedores@sistema-proveedores-514705.iam.gserviceaccount.com  .venv/
+__pycache__/
+.env
+credenciales_google.json
+*.xlsx
+*.pdf
+*.docx
+*.csv
+salidas/
+plantillas/
+mapas/
+Formularios/
