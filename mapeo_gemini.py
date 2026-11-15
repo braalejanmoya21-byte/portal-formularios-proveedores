@@ -24,90 +24,104 @@ MAPA_AVALFIDUCIARIA_BASE = {
     ]
 }
 
-def extraer_estructura(ruta: pathlib.Path) -> str:
-    ext = ruta.suffix.lower()
-    if ext == ".xlsx":
-        wb = openpyxl.load_workbook(ruta, data_only=False)
-        lineas = []
-        for hoja in wb.sheetnames:
-            ws = wb[hoja]
-            for fila in ws.iter_rows(max_row=150, max_col=20, values_only=False):
-                for celda in fila:
-                    if celda.value is not None:
-                        lineas.append(f"Hoja '{hoja}' | Celda {celda.coordinate}: {celda.value}")
-        return "\n".join(lineas[:800])
-    elif ext == ".docx":
-        doc = Document(ruta)
-        textos = [f"Párrafo {i}: {p.text}" for i, p in enumerate(doc.paragraphs) if p.text.strip()]
-        for t_idx, tabla in enumerate(doc.tables):
-            for r_idx, fila in enumerate(tabla.rows):
-                celdas = [f"Col {c_idx}: {c.text.strip()}" for c_idx, c in enumerate(fila.cells)]
-                textos.append(f"Tabla {t_idx} Fila {r_idx} -> " + " | ".join(celdas))
-        return "\n".join(textos)
-    elif ext == ".csv":
-        df = pd.read_csv(ruta, nrows=5, sep=None, engine="python")
-        return f"Columnas del archivo CSV: {list(df.columns)}"
-    return ""
+# Mapa exacto verificado celda por celda para oficial_GJU-F053 V5 VF 1.xlsx
+MAPA_GJU_F053_BASE = {
+    "campos": [
+        {"clave": "tipo_solicitud", "etiqueta": "2-Tipo de solicitud", "hoja": "GJU-F053", "celda": "H24"},
+        {"clave": "tipo_contraparte", "etiqueta": "3-Tipo de contraparte", "hoja": "GJU-F053", "celda": "L24"},
+        {"clave": "tipo_persona", "etiqueta": "4-Tipo de persona", "hoja": "GJU-F053", "celda": "D33"},
+        {"clave": "tipo_id", "etiqueta": "5-Tipo ID", "hoja": "GJU-F053", "celda": "H33"},
+        {"clave": "nit", "etiqueta": "6-Número ID", "hoja": "GJU-F053", "celda": "M33"},
+        {"clave": "razon_social", "etiqueta": "7-Nombre o razón social", "hoja": "GJU-F053", "celda": "E35"},
+        {"clave": "tipo_organizacion", "etiqueta": "8-Tipo de Organización", "hoja": "GJU-F053", "celda": "L35"},
+        {"clave": "direccion", "etiqueta": "9-Domicilio principal", "hoja": "GJU-F053", "celda": "D37"},
+        {"clave": "ciudad", "etiqueta": "10-Ciudad/Municipio", "hoja": "GJU-F053", "celda": "K37"},
+        {"clave": "departamento", "etiqueta": "11-Departamento", "hoja": "GJU-F053", "celda": "D39"},
+        {"clave": "pais", "etiqueta": "12-País", "hoja": "GJU-F053", "celda": "H39"},
+        {"clave": "telefono", "etiqueta": "13-Teléfono", "hoja": "GJU-F053", "celda": "M39"},
+        {"clave": "ciiu", "etiqueta": "14-CIUU", "hoja": "GJU-F053", "celda": "E42"},
+        {"clave": "contacto_nombre", "etiqueta": "29-Nombre persona de contacto", "hoja": "GJU-F053", "celda": "F54"},
+        {"clave": "contacto_cargo", "etiqueta": "30-Cargo persona de contacto", "hoja": "GJU-F053", "celda": "L54"},
+        {"clave": "activos_totales", "etiqueta": "40-Activos Totales", "hoja": "GJU-F053", "celda": "G71"},
+        {"clave": "pasivos_totales", "etiqueta": "41-Pasivos Totales", "hoja": "GJU-F053", "celda": "L71"},
+        {"clave": "patrimonio", "etiqueta": "42-Patrimonio (Total)", "hoja": "GJU-F053", "celda": "D73"},
+        {"clave": "ingresos_totales", "etiqueta": "43-Ingreso (Total)", "hoja": "GJU-F053", "celda": "H73"},
+        {"clave": "ganancia_perdida", "etiqueta": "44-Ganancia (Pérdida)", "hoja": "GJU-F053", "celda": "L73"},
+        {"clave": "rep_legal_calidad", "etiqueta": "65-Calidad Rep Legal", "hoja": "GJU-F053", "celda": "B161"},
+        {"clave": "rep_legal_nombre_completo", "etiqueta": "66-Nombres y apellidos Rep Legal", "hoja": "GJU-F053", "celda": "C161"},
+        {"clave": "rep_legal_tipo_id", "etiqueta": "67-Tipo ID Rep Legal", "hoja": "GJU-F053", "celda": "G161"},
+        {"clave": "rep_legal_id", "etiqueta": "68-Número ID Rep Legal", "hoja": "GJU-F053", "celda": "H161"},
+        {"clave": "pais", "etiqueta": "69-País de expedición Rep Legal", "hoja": "GJU-F053", "celda": "J161"},
+        {"clave": "direccion", "etiqueta": "70-Dirección Rep Legal", "hoja": "GJU-F053", "celda": "L161"},
+        {"clave": "telefono", "etiqueta": "71-Teléfono Rep Legal", "hoja": "GJU-F053", "celda": "N161"}
+    ]
+}
 
 def _autodetectar_respaldo_local(ruta_archivo: pathlib.Path, claves_maestra: list[str]) -> dict:
     ext = ruta_archivo.suffix.lower()
-    if "avalfiduciaria" in ruta_archivo.name.lower() and ext == ".pdf":
-        return MAPA_AVALFIDUCIARIA_BASE
+    nombre = ruta_archivo.name.lower()
 
-    sinonimos = {
-        "razon_social": ["razón social", "razon social", "nombre de la empresa", "nombre o razón"],
-        "nit": ["nit", "número de identificación", "numero de identificacion", "identificación tributaria"],
-        "ciiu": ["ciiu", "actividad económica", "actividad economica"],
-        "activos_totales": ["total activos", "activos totales", "activos"],
-        "pasivos_totales": ["total pasivos", "pasivos totales", "pasivos"],
-        "patrimonio": ["patrimonio"],
-        "ingresos_totales": ["ingresos", "ventas anuales"],
-        "direccion": ["dirección", "direccion"],
-        "ciudad": ["ciudad", "municipio"],
-        "correo_principal": ["correo", "email", "e-mail"],
-        "rep_legal_primer_nombre": ["representante legal", "primer nombre"],
-        "rep_legal_id": ["documento representante", "cédula", "cedula"]
-    }
+    if "avalfiduciaria" in nombre and ext == ".pdf":
+        return MAPA_AVALFIDUCIARIA_BASE
+    if "gju-f053" in nombre and ext == ".xlsx":
+        return MAPA_GJU_F053_BASE
 
     if ext == ".xlsx":
         wb = openpyxl.load_workbook(ruta_archivo, data_only=True)
-        hoja_principal = wb.active.title
+        if "GJU-F053" in wb.sheetnames:
+            return MAPA_GJU_F053_BASE
+
+        ws = wb.active
+        # Mapa de rangos combinados para saltar siempre fuera de la etiqueta combinada
+        merged_lookup = {}
+        for rng in ws.merged_cells.ranges:
+            for r in range(rng.min_row, rng.max_row + 1):
+                for c in range(rng.min_col, rng.max_col + 1):
+                    merged_lookup[(r, c)] = rng
+
+        sinonimos = {
+            "razon_social": ["razón social", "razon social", "nombre de la empresa"],
+            "nit": ["nit", "6-número id", "identificación tributaria"],
+            "ciiu": ["ciiu", "ciuu", "actividad económica"],
+            "direccion": ["domicilio principal", "dirección", "direccion"],
+            "ciudad": ["ciudad", "municipio"],
+            "telefono": ["teléfono", "telefono"],
+            "correo_principal": ["correo", "email"],
+            "activos_totales": ["activos totales", "total activos"],
+            "pasivos_totales": ["pasivos totales", "total pasivos"],
+            "patrimonio": ["patrimonio"],
+            "ingresos_totales": ["ingreso (total)", "ingresos", "ventas anuales"]
+        }
+
         campos_detectados = []
         claves_usadas = set()
-
-        for nombre_hoja in wb.sheetnames:
-            ws = wb[nombre_hoja]
-            for fila in ws.iter_rows(max_row=150, max_col=20):
-                for celda in fila:
-                    if celda.value is None:
+        for fila in ws.iter_rows(max_row=180, max_col=18):
+            for celda in fila:
+                if celda.value is None:
+                    continue
+                texto = str(celda.value).strip()
+                # Ignorar párrafos largos de instrucciones
+                if len(texto) > 65:
+                    continue
+                texto_lower = texto.lower()
+                for clave, palabras in sinonimos.items():
+                    if clave in claves_usadas:
                         continue
-                    texto_celda = str(celda.value).strip().lower()
-                    for clave, palabras in sinonimos.items():
-                        if clave in claves_usadas:
-                            continue
-                        if any(p in texto_celda for p in palabras):
-                            celda_derecha = ws.cell(row=celda.row, column=celda.column + 1)
-                            celda_abajo = ws.cell(row=celda.row + 1, column=celda.column)
-                            destino = celda_derecha.coordinate if celda_derecha.value is None else celda_abajo.coordinate
-                            campos_detectados.append({
-                                "clave": clave,
-                                "etiqueta": str(celda.value)[:40],
-                                "hoja": nombre_hoja,
-                                "celda": destino
-                            })
-                            claves_usadas.add(clave)
-                            break
-
-        if not campos_detectados:
-            campos_detectados = [
-                {"clave": "razon_social", "etiqueta": "Razón Social", "hoja": hoja_principal, "celda": "C5"},
-                {"clave": "nit", "etiqueta": "NIT", "hoja": hoja_principal, "celda": "C6"},
-                {"clave": "ciiu", "etiqueta": "Código CIIU", "hoja": hoja_principal, "celda": "C7"},
-                {"clave": "activos_totales", "etiqueta": "Activos", "hoja": hoja_principal, "celda": "C8"},
-                {"clave": "pasivos_totales", "etiqueta": "Pasivos", "hoja": hoja_principal, "celda": "C9"},
-                {"clave": "patrimonio", "etiqueta": "Patrimonio", "hoja": hoja_principal, "celda": "C10"},
-                {"clave": "ingresos_totales", "etiqueta": "Ingresos", "hoja": hoja_principal, "celda": "C11"}
-            ]
+                    if any(p in texto_lower for p in palabras):
+                        rng = merged_lookup.get((celda.row, celda.column))
+                        col_derecha = (rng.max_col + 1) if rng else (celda.column + 1)
+                        fila_abajo = (rng.max_row + 1) if rng else (celda.row + 1)
+                        celda_der = ws.cell(row=celda.row, column=col_derecha)
+                        celda_abj = ws.cell(row=fila_abajo, column=celda.column)
+                        destino = celda_der.coordinate if celda_der.value is None else celda_abj.coordinate
+                        campos_detectados.append({
+                            "clave": clave,
+                            "etiqueta": texto,
+                            "hoja": ws.title,
+                            "celda": destino
+                        })
+                        claves_usadas.add(clave)
+                        break
         return {"campos": campos_detectados}
 
     elif ext == ".csv":
@@ -120,57 +134,15 @@ def _autodetectar_respaldo_local(ruta_archivo: pathlib.Path, claves_maestra: lis
             return {"campos": [{"clave": "razon_social", "etiqueta": col, "columna_csv": col} for col in columnas]}
         return {"campos": [{"clave": k, "etiqueta": k, "columna_csv": k} for k in claves_maestra]}
 
-    elif ext == ".docx":
-        return {"campos": [{"clave": "razon_social", "etiqueta": "Razón Social", "ubicacion": "tabla", "tabla_idx": 0, "fila_idx": 0, "col_idx": 1}]}
-
     return MAPA_AVALFIDUCIARIA_BASE
 
 def generar_mapa_con_gemini(ruta_archivo: pathlib.Path, claves_maestra: list[str]) -> dict:
     ext = ruta_archivo.suffix.lower()
+    nombre = ruta_archivo.name.lower()
 
-    # Si es el PDF de Avalfiduciaria, usamos directamente el mapa calibrado sin gastar cuota de IA
-    if "avalfiduciaria" in ruta_archivo.name.lower() and ext == ".pdf":
+    if "avalfiduciaria" in nombre and ext == ".pdf":
         return MAPA_AVALFIDUCIARIA_BASE
+    if "gju-f053" in nombre and ext == ".xlsx":
+        return MAPA_GJU_F053_BASE
 
-    api_key = os.environ.get("GEMINI_API_KEY") or (st.secrets.get("GEMINI_API_KEY") if hasattr(st, "secrets") else None)
-    if not api_key or "TuClaveDeGeminiAqui" in str(api_key):
-        st.warning("Usando escáner automático local (configura una GEMINI_API_KEY válida en Secrets para usar IA).")
-        return _autodetectar_respaldo_local(ruta_archivo, claves_maestra)
-
-    prompt = f"""
-    Eres un experto en automatización de formularios de proveedores.
-    Tienes estas claves disponibles en la Base Maestra: {json.dumps(claves_maestra, ensure_ascii=False)}
-    
-    Analiza el formulario adjunto ({ext}) y devuelve un JSON con la clave "campos" (lista de objetos).
-    Según el formato, cada objeto debe tener:
-    - "clave": nombre exacto de la clave de la Base Maestra.
-    - "etiqueta": nombre del campo en el formulario.
-    - Si es .xlsx: incluye "hoja" y "celda" (la celda vacía donde debe escribirse la respuesta, NUNCA la celda de la etiqueta ni una celda con fórmula).
-    - Si es .docx: incluye "ubicacion" ("tabla" o "parrafo"), "tabla_idx", "fila_idx", "col_idx" (la celda vacía donde va el valor).
-    - Si es .pdf: incluye "pagina" (empezando en 0), "tipo" ("texto" o "checkbox"), "opcion" (si es checkbox) y "bbox" [x0, y0, x1, y1] en escala de 0 a 1000 indicando el espacio en blanco donde se debe escribir.
-    - Si es .csv: incluye "columna_csv" con el nombre exacto de la columna del CSV.
-    """
-
-    try:
-        client = genai.Client(api_key=api_key)
-        if ext == ".pdf":
-            contenido = [
-                types.Part.from_bytes(data=ruta_archivo.read_bytes(), mime_type="application/pdf"),
-                prompt
-            ]
-        else:
-            estructura = extraer_estructura(ruta_archivo)
-            contenido = [f"Estructura del archivo:\n{estructura}", prompt]
-
-        respuesta = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=contenido,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.0
-            )
-        )
-        return json.loads(respuesta.text)
-    except Exception as e:
-        st.warning(f"Se activó el detector de estructura local automático (Detalle API: {type(e).__name__}).")
-        return _autodetectar_respaldo_local(ruta_archivo, claves_maestra)
+    return _autodetectar_respaldo_local(ruta_archivo, claves_maestra)
