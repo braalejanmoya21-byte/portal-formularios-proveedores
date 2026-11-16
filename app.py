@@ -1,4 +1,5 @@
 import datetime
+import importlib
 import os
 import pathlib
 import tempfile
@@ -6,7 +7,16 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+import google_connector
+import llenadores
+import mapeo_gemini
+
+importlib.reload(google_connector)
+importlib.reload(llenadores)
+importlib.reload(mapeo_gemini)
+
 from google_connector import (
+    actualizar_maestra_desde_tabla,
     cargar_datos_completos_maestra,
     obtener_maestra,
     obtener_mapa_sheets,
@@ -43,17 +53,14 @@ claves_vacias_maestra = [k for k, v in datos_maestra.items() if str(v).strip() i
 col_estado1, col_btn_cargar, col_btn_sync = st.columns([2, 1, 1])
 with col_estado1:
     if claves_vacias_maestra:
-        st.warning(
-            f"Tu pestaña 'Maestra' tiene {len(claves_vacias_maestra)} campos en 'VACIO': "
-            f"{', '.join(claves_vacias_maestra[:6])}..."
-        )
+        st.warning(f"Tu pestaña 'Maestra' tiene {len(claves_vacias_maestra)} campos en 'VACIO'.")
     else:
-        st.success(f"Base Maestra activa en memoria ({len(datos_maestra)} campos listos).")
+        st.success(f"Base Maestra activa ({len(datos_maestra)} campos listos).")
 
 with col_btn_cargar:
-    if st.button("Cargar los 29 datos oficiales en Maestra"):
+    if st.button("Cargar datos base oficiales en Maestra"):
         cargar_datos_completos_maestra(CRED_GOOGLE, NOMBRE_SHEET)
-        st.success("Datos oficiales cargados.")
+        st.success("Datos base cargados en Google Sheets.")
         st.rerun()
 
 with col_btn_sync:
@@ -62,7 +69,7 @@ with col_btn_sync:
         st.success(f"Sincronizados {n_sync} campos desde Google Forms.")
         st.rerun()
 
-with st.expander("Ver tabla completa de la pestaña Maestra (muestra VACIO donde falta información)"):
+with st.expander("Ver tabla completa de la pestaña Maestra en Google Sheets"):
     df_maestra = pd.DataFrame(
         [{"Clave en Maestra": k, "Valor Actual": v, "Estado": "VACIO" if str(v) == "VACIO" else "LLENO"}
          for k, v in datos_maestra.items()]
@@ -78,7 +85,7 @@ with col3:
     proveedor = st.text_input("Nombre del Proveedor o Entidad")
 
 archivo = st.file_uploader(
-    "Sube el formulario del proveedor (.pdf, .xlsx, .docx, .csv)",
+    "Sube el formulario original en blanco del proveedor (.pdf, .xlsx, .docx, .csv)",
     type=["pdf", "xlsx", "docx", "csv"]
 )
 
@@ -90,31 +97,45 @@ if archivo and usuario and proveedor:
         ruta_temp = pathlib.Path(tmp_dir) / archivo.name
         ruta_temp.write_bytes(archivo.getvalue())
 
-        forzar_reescaneo = st.button("Actualizar / Reconstruir Mapa del Formulario")
+        forzar_reescaneo = st.button("🔄 Reconstruir todas las preguntas del formulario (Borrar mapa anterior)")
 
-        mapa_actual = None if forzar_reescaneo else obtener_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla)
+        mapa_guardado = None if forzar_reescaneo else obtener_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla)
+        mapa_completo_detectado = generar_mapa_con_gemini(ruta_temp, list(datos_maestra.keys()))
 
-        if mapa_actual is None:
-            with st.spinner("Construyendo mapa exacto de celdas/coordenadas..."):
-                mapa_actual = generar_mapa_con_gemini(ruta_temp, list(datos_maestra.keys()))
-                guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
+        # Si el mapa guardado en Google Sheets era el antiguo de solo 11 filas, lo actualizamos automáticamente al completo
+        if mapa_guardado is None or len(mapa_guardado.get("campos", [])) < len(mapa_completo_detectado.get("campos", [])):
+            mapa_actual = mapa_completo_detectado
+            guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
+        else:
+            mapa_actual = mapa_guardado
 
         campos_con_estado = []
         for c in mapa_actual.get("campos", []):
-            item = dict(c)
-            val = str(datos_maestra.get(item.get("clave", ""), "VACIO")).strip()
-            item["valor_a_escribir"] = val if val != "" else "VACIO"
-            item["estado"] = "VACIO" if item["valor_a_escribir"] == "VACIO" else "LLENO"
-            campos_con_estado.append(item)
+            clave_campo = c.get("clave", "")
+            val = str(datos_maestra.get(clave_campo, "VACIO")).strip()
+            val_mostrar = val if val not in ("", "None") else "VACIO"
+            item_ordenado = {
+                "clave": clave_campo,
+                "valor_a_escribir": val_mostrar,
+                "estado": "VACIO" if val_mostrar == "VACIO" else "LLENO",
+                "etiqueta": c.get("etiqueta", ""),
+            }
+            for k_extra, v_extra in c.items():
+                if k_extra not in item_ordenado:
+                    item_ordenado[k_extra] = v_extra
+            campos_con_estado.append(item_ordenado)
 
-        st.subheader("1. Control de llenado: Edita todas las celdas que necesites sin recargar la página")
+        st.subheader(
+            f"1. Control de llenado ({len(campos_con_estado)} preguntas detectadas en este documento): "
+            "Edita la columna 'valor_a_escribir' y presiona Enter en cada celda"
+        )
 
-        # st.form evita que cada cambio de valor en la tabla dispare llamadas a Google Sheets
         with st.form(key=f"form_edicion_{identificador_plantilla}"):
             campos_editados = st.data_editor(
                 campos_con_estado,
                 num_rows="dynamic",
-                width="stretch"
+                width="stretch",
+                disabled=["estado"]
             )
             aprobar_y_generar = st.form_submit_button(
                 "2. Guardar en Google Sheets y Generar Archivo Diligenciado",
@@ -122,10 +143,22 @@ if archivo and usuario and proveedor:
             )
 
         if aprobar_y_generar:
-            mapa_actual["campos"] = campos_editados
-            guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
+            datos_combinados = dict(datos_maestra)
+            for fila_ed in campos_editados:
+                k_ed = str(fila_ed.get("clave", "")).strip()
+                v_ed = str(fila_ed.get("valor_a_escribir", "")).strip()
+                if k_ed:
+                    datos_combinados[k_ed] = v_ed if v_ed != "" else "VACIO"
 
-            datos_limpios = {k: v for k, v in datos_maestra.items() if str(v).strip() not in ("", "VACIO")}
+            # Guardar todos los valores nuevos en la pestaña Maestra y el mapa en la pestaña Mapas
+            actualizar_maestra_desde_tabla(CRED_GOOGLE, NOMBRE_SHEET, datos_combinados, usuario)
+            mapa_actual["campos"] = campos_editados
+            guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_combinados)
+
+            datos_limpios = {
+                k: v for k, v in datos_combinados.items()
+                if str(v).strip() not in ("", "VACIO", "None")
+            }
 
             marca = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             ruta_salida = pathlib.Path(tmp_dir) / f"{proveedor}_{marca}_{archivo.name}"
@@ -139,7 +172,10 @@ if archivo and usuario and proveedor:
             elif ext == ".csv":
                 llenar_csv(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
 
-            faltantes = [c["clave"] for c in campos_editados if str(datos_maestra.get(c.get("clave"), "VACIO")) == "VACIO"]
+            faltantes = [
+                c["clave"] for c in campos_editados
+                if str(c.get("valor_a_escribir", "VACIO")).strip() in ("", "VACIO", "None")
+            ]
             llenados = len(campos_editados) - len(faltantes)
             usuario_completo = f"{usuario} ({area_solicitante})" if area_solicitante else usuario
 
@@ -149,8 +185,8 @@ if archivo and usuario and proveedor:
             nombre_final = f"Consecutivo_{consecutivo:04d}_{proveedor}_{archivo.name}"
 
             st.success(
-                f"Consecutivo #{consecutivo} registrado en Auditoría. "
-                f"Campos llenados: {llenados} | Campos en VACIO: {len(faltantes)}."
+                f"¡Archivo generado! Consecutivo #{consecutivo}. "
+                f"Preguntas diligenciadas en el archivo: {llenados} de {len(campos_editados)}."
             )
             st.download_button(
                 label="3. Descargar Formulario Diligenciado",
