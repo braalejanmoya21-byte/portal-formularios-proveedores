@@ -23,9 +23,14 @@ DATOS_COMPLETOS_EMPRESA = [
     ["direccion", "TRANSVERSAL 60 NO. 114A-55", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["ciudad", "BOGOTA D.C.", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["ciudad_diligenciamiento", "BOGOTA D.C.", "Administrativa", "sistema@empresa.com", "2026-11-15"],
+    ["fecha_diligenciamiento_dd", "15", "Administrativa", "sistema@empresa.com", "2026-11-15"],
+    ["fecha_diligenciamiento_mm", "11", "Administrativa", "sistema@empresa.com", "2026-11-15"],
+    ["fecha_diligenciamiento_aaaa", "2026", "Administrativa", "sistema@empresa.com", "2026-11-15"],
+    ["oficina", "PRINCIPAL BOGOTA", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["departamento", "BOGOTA D.C.", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["pais", "COLOMBIA", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["telefono", "6017050000", "Administrativa", "sistema@empresa.com", "2026-11-15"],
+    ["celular", "3150000000", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["correo_principal", "notificaciones@empresa.com", "Administrativa", "sistema@empresa.com", "2026-11-15"],
     ["ciiu", "6120", "Fiscal", "sistema@empresa.com", "2026-11-15"],
     ["origen_fondos", "Servicio telecomunicaciones inalambricas", "Contabilidad", "sistema@empresa.com", "2026-11-15"],
@@ -46,7 +51,6 @@ DATOS_COMPLETOS_EMPRESA = [
 
 @st.cache_resource(show_spinner=False)
 def _obtener_cliente(ruta_credenciales: str):
-    """Mantiene abierta una única sesión autenticada con Google para no repetir conexiones."""
     if "gcp_service_account" in st.secrets:
         info_creds = dict(st.secrets["gcp_service_account"])
         creds = Credentials.from_service_account_info(info_creds, scopes=SCOPES)
@@ -59,7 +63,6 @@ def conectar_sheet(ruta_credenciales: str, nombre_sheet: str):
     return cliente.open(nombre_sheet)
 
 def sincronizar_respuestas_forms_a_maestra(ruta_credenciales: str, nombre_sheet: str) -> int:
-    """Sincroniza respuestas de Google Forms bajo demanda en un solo lote (batch_update)."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     ws_maestra = sh.worksheet("Maestra")
     filas_maestra = ws_maestra.get_all_values()
@@ -101,7 +104,6 @@ def sincronizar_respuestas_forms_a_maestra(ruta_credenciales: str, nombre_sheet:
     return len(lote_actualizaciones)
 
 def cargar_datos_completos_maestra(ruta_credenciales: str, nombre_sheet: str) -> None:
-    """Llena la pestaña Maestra con los 29 campos base y limpia la memoria caché."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Maestra")
@@ -113,7 +115,6 @@ def cargar_datos_completos_maestra(ruta_credenciales: str, nombre_sheet: str) ->
 
 @st.cache_data(ttl=300, show_spinner=False)
 def obtener_maestra(ruta_credenciales: str, nombre_sheet: str) -> dict:
-    """Lee la pestaña Maestra una sola vez cada 5 minutos para no agotar la cuota de Google Sheets."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Maestra")
@@ -159,7 +160,6 @@ def obtener_maestra(ruta_credenciales: str, nombre_sheet: str) -> dict:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def obtener_mapa_sheets(ruta_credenciales: str, nombre_sheet: str, nombre_plantilla: str) -> dict | None:
-    """Lee el mapa desde la memoria caché sin gastar cuota en cada edición de la tabla."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Mapas")
@@ -225,7 +225,8 @@ def guardar_mapa_sheets(
         hoja_pag = str(c.get("hoja") if c.get("hoja") is not None else c.get("pagina", "0"))
         coord = str(c.get("celda") or c.get("columna_csv") or json.dumps(c.get("bbox", [])))
         tipo = str(c.get("tipo", "celda"))
-        val_maestra = str(datos_maestra.get(clave, "VACIO")).strip()
+        val_tabla = str(c.get("valor_a_escribir", "")).strip()
+        val_maestra = val_tabla if val_tabla not in ("", "VACIO", "None") else str(datos_maestra.get(clave, "VACIO")).strip()
         estado = "VACIO (Falta en Maestra)" if val_maestra in ("", "VACIO", "None") else "LLENO"
 
         filas_conservadas.append([
@@ -243,8 +244,8 @@ def registrar_auditoria_sheets(
     proveedor: str,
     formato: str,
     ruta_salida: pathlib.Path,
-    campos_llenados: int,
-    lista_vacios: list[str]
+    campos_llenados: int = 0,
+    lista_vacios: list[str] | None = None
 ) -> int:
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
@@ -280,3 +281,33 @@ def registrar_auditoria_sheets(
         sha256
     ])
     return consecutivo
+
+def actualizar_maestra_desde_tabla(ruta_credenciales: str, nombre_sheet: str, nuevos_valores: dict, usuario: str) -> None:
+    sh = conectar_sheet(ruta_credenciales, nombre_sheet)
+    ws = sh.worksheet("Maestra")
+    filas = ws.get_all_values()
+    mapa_filas = {str(f[0]).strip(): idx + 1 for idx, f in enumerate(filas) if f and f[0]}
+    ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    lote = []
+    filas_nuevas = []
+    for clave, valor in nuevos_valores.items():
+        clave_str = str(clave).strip()
+        val_str = str(valor).strip()
+        if not clave_str:
+            continue
+        val_final = val_str if val_str != "" else "VACIO"
+        if clave_str in mapa_filas:
+            fila_num = mapa_filas[clave_str]
+            lote.append({
+                "range": f"B{fila_num}:E{fila_num}",
+                "values": [[val_final, "Portal Web", usuario or "web", ahora]]
+            })
+        else:
+            filas_nuevas.append([clave_str, val_final, "Portal Web", usuario or "web", ahora])
+
+    if lote:
+        ws.batch_update(lote)
+    if filas_nuevas:
+        ws.append_rows(filas_nuevas)
+    st.cache_data.clear()

@@ -15,18 +15,6 @@ importlib.reload(google_connector)
 importlib.reload(llenadores)
 importlib.reload(mapeo_gemini)
 
-from google_connector import (
-    actualizar_maestra_desde_tabla,
-    cargar_datos_completos_maestra,
-    obtener_maestra,
-    obtener_mapa_sheets,
-    guardar_mapa_sheets,
-    registrar_auditoria_sheets,
-    sincronizar_respuestas_forms_a_maestra,
-)
-from llenadores import llenar_excel, llenar_word, llenar_pdf, llenar_csv
-from mapeo_gemini import generar_mapa_con_gemini
-
 load_dotenv()
 
 CRED_GOOGLE = "credenciales_google.json"
@@ -43,7 +31,7 @@ if clave_configurada:
         st.stop()
 
 try:
-    datos_maestra = obtener_maestra(CRED_GOOGLE, NOMBRE_SHEET)
+    datos_maestra = google_connector.obtener_maestra(CRED_GOOGLE, NOMBRE_SHEET)
 except Exception as e:
     st.error(f"Error al leer la Base Maestra en Google Sheets: {e}")
     st.stop()
@@ -59,15 +47,17 @@ with col_estado1:
 
 with col_btn_cargar:
     if st.button("Cargar datos base oficiales en Maestra"):
-        cargar_datos_completos_maestra(CRED_GOOGLE, NOMBRE_SHEET)
-        st.success("Datos base cargados en Google Sheets.")
-        st.rerun()
+        if hasattr(google_connector, "cargar_datos_completos_maestra"):
+            google_connector.cargar_datos_completos_maestra(CRED_GOOGLE, NOMBRE_SHEET)
+            st.success("Datos base cargados en Google Sheets.")
+            st.rerun()
 
 with col_btn_sync:
     if st.button("Sincronizar respuestas de Google Forms"):
-        n_sync = sincronizar_respuestas_forms_a_maestra(CRED_GOOGLE, NOMBRE_SHEET)
-        st.success(f"Sincronizados {n_sync} campos desde Google Forms.")
-        st.rerun()
+        if hasattr(google_connector, "sincronizar_respuestas_forms_a_maestra"):
+            n_sync = google_connector.sincronizar_respuestas_forms_a_maestra(CRED_GOOGLE, NOMBRE_SHEET)
+            st.success(f"Sincronizados {n_sync} campos desde Google Forms.")
+            st.rerun()
 
 with st.expander("Ver tabla completa de la pestaña Maestra en Google Sheets"):
     df_maestra = pd.DataFrame(
@@ -99,13 +89,12 @@ if archivo and usuario and proveedor:
 
         forzar_reescaneo = st.button("🔄 Reconstruir todas las preguntas del formulario (Borrar mapa anterior)")
 
-        mapa_guardado = None if forzar_reescaneo else obtener_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla)
-        mapa_completo_detectado = generar_mapa_con_gemini(ruta_temp, list(datos_maestra.keys()))
+        mapa_guardado = None if forzar_reescaneo else google_connector.obtener_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla)
+        mapa_completo_detectado = mapeo_gemini.generar_mapa_con_gemini(ruta_temp, list(datos_maestra.keys()))
 
-        # Si el mapa guardado en Google Sheets era el antiguo de solo 11 filas, lo actualizamos automáticamente al completo
         if mapa_guardado is None or len(mapa_guardado.get("campos", [])) < len(mapa_completo_detectado.get("campos", [])):
             mapa_actual = mapa_completo_detectado
-            guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
+            google_connector.guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
         else:
             mapa_actual = mapa_guardado
 
@@ -126,8 +115,8 @@ if archivo and usuario and proveedor:
             campos_con_estado.append(item_ordenado)
 
         st.subheader(
-            f"1. Control de llenado ({len(campos_con_estado)} preguntas detectadas en este documento): "
-            "Edita la columna 'valor_a_escribir' y presiona Enter en cada celda"
+            f"1. Control de llenado ({len(campos_con_estado)} preguntas detectadas): "
+            "Edita la columna 'valor_a_escribir' y presiona Enter"
         )
 
         with st.form(key=f"form_edicion_{identificador_plantilla}"):
@@ -150,10 +139,11 @@ if archivo and usuario and proveedor:
                 if k_ed:
                     datos_combinados[k_ed] = v_ed if v_ed != "" else "VACIO"
 
-            # Guardar todos los valores nuevos en la pestaña Maestra y el mapa en la pestaña Mapas
-            actualizar_maestra_desde_tabla(CRED_GOOGLE, NOMBRE_SHEET, datos_combinados, usuario)
+            if hasattr(google_connector, "actualizar_maestra_desde_tabla"):
+                google_connector.actualizar_maestra_desde_tabla(CRED_GOOGLE, NOMBRE_SHEET, datos_combinados, usuario)
+
             mapa_actual["campos"] = campos_editados
-            guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_combinados)
+            google_connector.guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_combinados)
 
             datos_limpios = {
                 k: v for k, v in datos_combinados.items()
@@ -164,13 +154,13 @@ if archivo and usuario and proveedor:
             ruta_salida = pathlib.Path(tmp_dir) / f"{proveedor}_{marca}_{archivo.name}"
 
             if ext == ".xlsx":
-                llenar_excel(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
+                llenadores.llenar_excel(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
             elif ext == ".docx":
-                llenar_word(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
+                llenadores.llenar_word(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
             elif ext == ".pdf":
-                llenar_pdf(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
+                llenadores.llenar_pdf(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
             elif ext == ".csv":
-                llenar_csv(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
+                llenadores.llenar_csv(ruta_temp, ruta_salida, mapa_actual, datos_limpios)
 
             faltantes = [
                 c["clave"] for c in campos_editados
@@ -179,7 +169,7 @@ if archivo and usuario and proveedor:
             llenados = len(campos_editados) - len(faltantes)
             usuario_completo = f"{usuario} ({area_solicitante})" if area_solicitante else usuario
 
-            consecutivo = registrar_auditoria_sheets(
+            consecutivo = google_connector.registrar_auditoria_sheets(
                 CRED_GOOGLE, NOMBRE_SHEET, usuario_completo, proveedor, ext, ruta_salida, llenados, faltantes
             )
             nombre_final = f"Consecutivo_{consecutivo:04d}_{proveedor}_{archivo.name}"
