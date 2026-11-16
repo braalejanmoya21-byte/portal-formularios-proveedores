@@ -1,21 +1,10 @@
 import datetime
-import importlib
 import os
 import pathlib
 import tempfile
-import openpyxl
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-
-import google_connector
-import llenadores
-import mapeo_gemini
-
-# Forzar a Streamlit Cloud a recargar en memoria la última versión subida a GitHub
-importlib.reload(google_connector)
-importlib.reload(llenadores)
-importlib.reload(mapeo_gemini)
 
 from google_connector import (
     cargar_datos_completos_maestra,
@@ -23,9 +12,12 @@ from google_connector import (
     obtener_mapa_sheets,
     guardar_mapa_sheets,
     registrar_auditoria_sheets,
+    sincronizar_respuestas_forms_a_maestra,
 )
 from llenadores import llenar_excel, llenar_word, llenar_pdf, llenar_csv
 from mapeo_gemini import generar_mapa_con_gemini
+
+load_dotenv()
 
 CRED_GOOGLE = "credenciales_google.json"
 NOMBRE_SHEET = "Base_Maestra_Proveedores"
@@ -46,23 +38,28 @@ except Exception as e:
     st.error(f"Error al leer la Base Maestra en Google Sheets: {e}")
     st.stop()
 
-# Contador de campos vacíos en la pestaña Maestra
 claves_vacias_maestra = [k for k, v in datos_maestra.items() if str(v).strip() in ("", "VACIO", "None")]
 
-col_estado1, col_estado2 = st.columns([3, 2])
+col_estado1, col_btn_cargar, col_btn_sync = st.columns([2, 1, 1])
 with col_estado1:
     if claves_vacias_maestra:
         st.warning(
-            f"Atención: Tu pestaña 'Maestra' en Google Sheets tiene {len(claves_vacias_maestra)} campos marcados como 'VACIO': "
-            f"{', '.join(claves_vacias_maestra[:8])}."
+            f"Tu pestaña 'Maestra' tiene {len(claves_vacias_maestra)} campos en 'VACIO': "
+            f"{', '.join(claves_vacias_maestra[:6])}..."
         )
     else:
-        st.success(f"Base Maestra activa y completa ({len(datos_maestra)} campos listos con información).")
+        st.success(f"Base Maestra activa en memoria ({len(datos_maestra)} campos listos).")
 
-with col_estado2:
-    if st.button("Cargar todos los datos oficiales en la pestaña Maestra"):
+with col_btn_cargar:
+    if st.button("Cargar los 29 datos oficiales en Maestra"):
         cargar_datos_completos_maestra(CRED_GOOGLE, NOMBRE_SHEET)
-        st.success("Se cargaron los 29 campos completos en la pestaña Maestra de tu Google Sheets.")
+        st.success("Datos oficiales cargados.")
+        st.rerun()
+
+with col_btn_sync:
+    if st.button("Sincronizar respuestas de Google Forms"):
+        n_sync = sincronizar_respuestas_forms_a_maestra(CRED_GOOGLE, NOMBRE_SHEET)
+        st.success(f"Sincronizados {n_sync} campos desde Google Forms.")
         st.rerun()
 
 with st.expander("Ver tabla completa de la pestaña Maestra (muestra VACIO donde falta información)"):
@@ -102,7 +99,6 @@ if archivo and usuario and proveedor:
                 mapa_actual = generar_mapa_con_gemini(ruta_temp, list(datos_maestra.keys()))
                 guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
 
-        # Agregar en vivo la columna de vista previa del valor y si está LLENO o VACIO
         campos_con_estado = []
         for c in mapa_actual.get("campos", []):
             item = dict(c)
@@ -111,18 +107,24 @@ if archivo and usuario and proveedor:
             item["estado"] = "VACIO" if item["valor_a_escribir"] == "VACIO" else "LLENO"
             campos_con_estado.append(item)
 
-        st.subheader("1. Control de llenado: Dónde se escribe cada dato y cuáles están en VACIO")
-        campos_editados = st.data_editor(
-            campos_con_estado,
-            num_rows="dynamic",
-            width="stretch"
-        )
+        st.subheader("1. Control de llenado: Edita todas las celdas que necesites sin recargar la página")
 
-        if st.button("2. Guardar en Google Sheets y Generar Archivo Diligenciado", type="primary"):
+        # st.form evita que cada cambio de valor en la tabla dispare llamadas a Google Sheets
+        with st.form(key=f"form_edicion_{identificador_plantilla}"):
+            campos_editados = st.data_editor(
+                campos_con_estado,
+                num_rows="dynamic",
+                width="stretch"
+            )
+            aprobar_y_generar = st.form_submit_button(
+                "2. Guardar en Google Sheets y Generar Archivo Diligenciado",
+                type="primary"
+            )
+
+        if aprobar_y_generar:
             mapa_actual["campos"] = campos_editados
             guardar_mapa_sheets(CRED_GOOGLE, NOMBRE_SHEET, identificador_plantilla, mapa_actual, datos_maestra)
 
-            # Solo enviar a los llenadores los datos que no estén marcados como VACIO
             datos_limpios = {k: v for k, v in datos_maestra.items() if str(v).strip() not in ("", "VACIO")}
 
             marca = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

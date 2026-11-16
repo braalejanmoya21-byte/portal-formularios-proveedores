@@ -11,7 +11,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Base completa con todos los campos que piden Avalfiduciaria, GJU-F053 e Impuestos
 DATOS_COMPLETOS_EMPRESA = [
     ["clave", "valor", "area_responsable", "actualizado_por", "fecha_actualizacion"],
     ["tipo_solicitud", "Vinculación", "Comercial", "sistema@empresa.com", "2026-11-15"],
@@ -45,38 +44,31 @@ DATOS_COMPLETOS_EMPRESA = [
     ["rep_legal_id", "79123456", "Jurídica", "sistema@empresa.com", "2026-11-15"]
 ]
 
-def _limpiar_numero(valor) -> float:
-    if isinstance(valor, (int, float)):
-        return float(valor)
-    texto = str(valor).replace("$", "").replace(" ", "").strip()
-    if not texto or texto.upper() == "VACIO":
-        return 0.0
-    if texto.count(".") > 1:
-        texto = texto.replace(".", "")
-    texto = texto.replace(",", ".")
-    try:
-        return float(texto)
-    except ValueError:
-        return 0.0
-
-def conectar_sheet(ruta_credenciales: str, nombre_sheet: str):
+@st.cache_resource(show_spinner=False)
+def _obtener_cliente(ruta_credenciales: str):
+    """Mantiene abierta una única sesión autenticada con Google para no repetir conexiones."""
     if "gcp_service_account" in st.secrets:
         info_creds = dict(st.secrets["gcp_service_account"])
         creds = Credentials.from_service_account_info(info_creds, scopes=SCOPES)
     else:
         creds = Credentials.from_service_account_file(ruta_credenciales, scopes=SCOPES)
-    cliente = gspread.authorize(creds)
+    return gspread.authorize(creds)
+
+def conectar_sheet(ruta_credenciales: str, nombre_sheet: str):
+    cliente = _obtener_cliente(ruta_credenciales)
     return cliente.open(nombre_sheet)
 
-def sincronizar_respuestas_forms_a_maestra(sh) -> int:
-    """Lee las hojas 'Respuestas de formulario...' vinculadas y actualiza la pestaña Maestra."""
+def sincronizar_respuestas_forms_a_maestra(ruta_credenciales: str, nombre_sheet: str) -> int:
+    """Sincroniza respuestas de Google Forms bajo demanda en un solo lote (batch_update)."""
+    sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     ws_maestra = sh.worksheet("Maestra")
     filas_maestra = ws_maestra.get_all_values()
     mapa_filas = {str(f[0]).strip().lower(): idx + 1 for idx, f in enumerate(filas_maestra) if f and f[0]}
-    actualizados = 0
+    lote_actualizaciones = []
 
     for ws in sh.worksheets():
-        if "respuestas de formulario" in ws.title.lower() or "form responses" in ws.title.lower():
+        titulo_low = ws.title.lower()
+        if "respuestas de formulario" in titulo_low or "form responses" in titulo_low:
             datos_form = ws.get_all_values()
             if len(datos_form) < 2:
                 continue
@@ -98,12 +90,18 @@ def sincronizar_respuestas_forms_a_maestra(sh) -> int:
 
                 if clave_limpia in mapa_filas:
                     fila_num = mapa_filas[clave_limpia]
-                    ws_maestra.update(f"B{fila_num}:E{fila_num}", [[valor_final, "Google Forms", correo_resp, fecha_resp]])
-                    actualizados += 1
-    return actualizados
+                    lote_actualizaciones.append({
+                        "range": f"B{fila_num}:E{fila_num}",
+                        "values": [[valor_final, "Google Forms", correo_resp, fecha_resp]]
+                    })
+
+    if lote_actualizaciones:
+        ws_maestra.batch_update(lote_actualizaciones)
+    st.cache_data.clear()
+    return len(lote_actualizaciones)
 
 def cargar_datos_completos_maestra(ruta_credenciales: str, nombre_sheet: str) -> None:
-    """Llena la pestaña Maestra con los 29 campos base para que no quede ninguna celda vacía."""
+    """Llena la pestaña Maestra con los 29 campos base y limpia la memoria caché."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Maestra")
@@ -111,17 +109,17 @@ def cargar_datos_completos_maestra(ruta_credenciales: str, nombre_sheet: str) ->
         ws = sh.add_worksheet(title="Maestra", rows=100, cols=10)
     ws.clear()
     ws.update("A1", DATOS_COMPLETOS_EMPRESA)
+    st.cache_data.clear()
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_maestra(ruta_credenciales: str, nombre_sheet: str) -> dict:
+    """Lee la pestaña Maestra una sola vez cada 5 minutos para no agotar la cuota de Google Sheets."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Maestra")
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="Maestra", rows=100, cols=10)
         ws.update("A1", DATOS_COMPLETOS_EMPRESA)
-
-    # Primero sincronizamos cualquier respuesta nueva que haya llegado por los Google Forms
-    sincronizar_respuestas_forms_a_maestra(sh)
 
     filas = ws.get_all_values()
     if len(filas) <= 1:
@@ -132,7 +130,6 @@ def obtener_maestra(ruta_credenciales: str, nombre_sheet: str) -> dict:
     actualizaciones_vacias = []
     ahora = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # Recorrer todas las filas y marcar explícitamente como "VACIO" cualquier celda sin información
     for idx, fila in enumerate(filas[1:], start=2):
         clave = str(fila[0]).strip() if len(fila) > 0 else ""
         if not clave:
@@ -160,7 +157,9 @@ def obtener_maestra(ruta_credenciales: str, nombre_sheet: str) -> dict:
 
     return datos
 
+@st.cache_data(ttl=300, show_spinner=False)
 def obtener_mapa_sheets(ruta_credenciales: str, nombre_sheet: str, nombre_plantilla: str) -> dict | None:
+    """Lee el mapa desde la memoria caché sin gastar cuota en cada edición de la tabla."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Mapas")
@@ -171,7 +170,6 @@ def obtener_mapa_sheets(ruta_credenciales: str, nombre_sheet: str, nombre_planti
     if len(filas) <= 1:
         return None
 
-    # Compatibilidad con el nuevo formato tabular detallado por campo
     encabezados = [h.strip().lower() for h in filas[0]]
     if "clave" in encabezados and "celda_o_coordenada" in encabezados:
         campos = []
@@ -203,7 +201,6 @@ def guardar_mapa_sheets(
     mapa: dict,
     datos_maestra: dict
 ) -> None:
-    """Guarda en la pestaña Mapas una fila legible por cada campo indicando dónde se llena y si está LLENO o VACIO."""
     sh = conectar_sheet(ruta_credenciales, nombre_sheet)
     try:
         ws = sh.worksheet("Mapas")
@@ -237,6 +234,7 @@ def guardar_mapa_sheets(
 
     ws.clear()
     ws.update("A1", filas_conservadas)
+    st.cache_data.clear()
 
 def registrar_auditoria_sheets(
     ruta_credenciales: str,
